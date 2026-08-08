@@ -4,6 +4,18 @@ import type { UmpireJsonSchema } from '../src/index.js'
 describe('validateSchema', () => {
   test.each([
     [
+      'rejects unknown top-level members',
+      {
+        version: 1,
+        fields: {
+          email: {},
+        },
+        rules: [],
+        unexpected: true,
+      },
+      'field',
+    ],
+    [
       'rejects unsupported schema versions',
       {
         version: 2,
@@ -11,6 +23,162 @@ describe('validateSchema', () => {
         rules: [],
       },
       'Unsupported schema version "2"',
+    ],
+    [
+      'rejects empty fields',
+      {
+        version: 1,
+        fields: {},
+        rules: [],
+      },
+      'field',
+    ],
+    [
+      'rejects unknown field members',
+      {
+        version: 1,
+        fields: {
+          email: {
+            description: 'not part of v1',
+          },
+        },
+        rules: [],
+      },
+      'field',
+    ],
+    [
+      'rejects unknown condition members',
+      {
+        version: 1,
+        conditions: {
+          role: {
+            type: 'string',
+            unexpected: true,
+          },
+        },
+        fields: {
+          target: {},
+        },
+        rules: [],
+      },
+      'unexpected',
+    ],
+    [
+      'rejects invalid condition types',
+      {
+        version: 1,
+        conditions: {
+          role: {
+            type: 'role-name',
+          },
+        },
+        fields: {
+          email: {},
+        },
+        rules: [],
+      },
+      'condition',
+    ],
+    [
+      'rejects unknown rule members',
+      {
+        version: 1,
+        fields: {
+          target: {},
+        },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: {
+              op: 'present',
+              field: 'target',
+            },
+            unexpected: true,
+          },
+        ],
+      },
+      'unexpected',
+    ],
+    [
+      'rejects unknown expression members',
+      {
+        version: 1,
+        fields: {
+          target: {},
+        },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: {
+              op: 'present',
+              field: 'target',
+              unexpected: true,
+            },
+          },
+        ],
+      },
+      'unexpected',
+    ],
+    [
+      'rejects unknown validator members',
+      {
+        version: 1,
+        fields: {
+          email: {},
+        },
+        rules: [],
+        validators: {
+          email: {
+            op: 'email',
+            unexpected: true,
+          },
+        },
+      },
+      'unexpected',
+    ],
+    [
+      'rejects unknown excluded members',
+      {
+        version: 1,
+        fields: {
+          email: {},
+        },
+        rules: [],
+        excluded: [
+          {
+            type: 'legacy',
+            description: 'legacy metadata',
+            unexpected: true,
+          },
+        ],
+      },
+      'unexpected',
+    ],
+    [
+      'rejects unknown validator spec members',
+      {
+        version: 1,
+        fields: {
+          email: {},
+        },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'email',
+            when: {
+              op: 'check',
+              field: 'email',
+              check: {
+                op: 'email',
+                unexpected: true,
+              },
+            },
+          },
+        ],
+      },
+      'unexpected',
     ],
     [
       'rejects non-serializable defaults',
@@ -347,6 +515,327 @@ describe('validateSchema', () => {
     expect(() => validateSchema(schema as unknown as UmpireJsonSchema)).toThrow(
       expectedMessage,
     )
+  })
+
+  test.each([
+    [
+      'rejects non-boolean field required flags',
+      { version: 1, fields: { target: { required: 'yes' } }, rules: [] },
+      'required must be a boolean',
+    ],
+    [
+      'rejects null condition definitions',
+      {
+        version: 1,
+        conditions: { role: null },
+        fields: { target: {} },
+        rules: [],
+      },
+      'condition "role" definition must be an object',
+    ],
+    [
+      'rejects string condition definitions',
+      {
+        version: 1,
+        conditions: { role: 'string' },
+        fields: { target: {} },
+        rules: [],
+      },
+      'condition "role" definition must be an object',
+    ],
+    [
+      'rejects enabledWhen rules with non-string fields',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 7,
+            when: { op: 'present', field: 'target' },
+          },
+        ],
+      },
+      'Rule "enabledWhen" field must be a string',
+    ],
+    [
+      'rejects fairWhen rules with non-string fields',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'fairWhen',
+            field: false,
+            when: { op: 'present', field: 'target' },
+          },
+        ],
+      },
+      'Rule "fairWhen" field must be a string',
+    ],
+    [
+      'rejects check rules with non-string fields',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [{ type: 'check', field: null, op: 'email' }],
+      },
+      'Rule "check" field must be a string',
+    ],
+    [
+      'rejects oneOf rules with non-string groups',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [{ type: 'oneOf', group: 7, branches: { choice: ['target'] } }],
+      },
+      'Rule "oneOf" group must be a string',
+    ],
+    [
+      'rejects eitherOf rules with non-string groups',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'eitherOf',
+            group: false,
+            branches: {
+              choice: [
+                {
+                  type: 'enabledWhen',
+                  field: 'target',
+                  when: { op: 'present', field: 'target' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      'Rule "eitherOf" group must be a string',
+    ],
+    [
+      'rejects non-primitive equality values',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: { op: 'eq', field: 'target', value: { nested: true } },
+          },
+        ],
+      },
+      'must be a JSON primitive',
+    ],
+    [
+      'rejects non-numeric comparison values',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: { op: 'gt', field: 'target', value: '1' },
+          },
+        ],
+      },
+      'must be a finite number',
+    ],
+    [
+      'rejects malformed expression field names',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: { op: 'present', field: 7 },
+          },
+        ],
+      },
+      'field must be a string',
+    ],
+    [
+      'rejects malformed expression value arrays',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: { op: 'in', field: 'target', values: ['ok', {}] },
+          },
+        ],
+      },
+      'array of JSON primitives',
+    ],
+    [
+      'rejects malformed expression lists',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: { op: 'and', exprs: {} },
+          },
+        ],
+      },
+      'exprs must be an array',
+    ],
+    [
+      'rejects unknown expression operators',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: { op: 'mystery', field: 'target' },
+          },
+        ],
+      },
+      'Unknown expression op "mystery"',
+    ],
+    [
+      'rejects non-string rule reasons',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'enabledWhen',
+            field: 'target',
+            when: { op: 'present', field: 'target' },
+            reason: 7,
+          },
+        ],
+      },
+      'Rule reason must be a string',
+    ],
+    [
+      'rejects malformed disables targets',
+      {
+        version: 1,
+        fields: { source: {}, target: {} },
+        rules: [{ type: 'disables', source: 'source', targets: 'target' }],
+      },
+      'targets must be an array of strings',
+    ],
+    [
+      'rejects malformed oneOf branches',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'oneOf',
+            group: 'choice',
+            branches: { choice: 'target' },
+          },
+        ],
+      },
+      'branch "choice" must be an array of strings',
+    ],
+    [
+      'rejects malformed eitherOf branches',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'eitherOf',
+            group: 'choice',
+            branches: { choice: {} },
+          },
+        ],
+      },
+      'branch "choice" must be an array',
+    ],
+    [
+      'rejects malformed anyOf rule lists',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [{ type: 'anyOf', rules: {} }],
+      },
+      'rules must be an array',
+    ],
+    [
+      'rejects malformed check patterns',
+      {
+        version: 1,
+        fields: { target: {} },
+        rules: [
+          {
+            type: 'check',
+            field: 'target',
+            op: 'matches',
+            pattern: 7,
+          },
+        ],
+      },
+      'pattern must be a string',
+    ],
+    [
+      'rejects non-object rule entries',
+      { version: 1, fields: { target: {} }, rules: [null] },
+      'Rule must be an object',
+    ],
+    [
+      'rejects non-object excluded entries',
+      { version: 1, fields: { target: {} }, rules: [], excluded: [null] },
+      'Excluded rule must be an object',
+    ],
+  ])('%s', (_label, schema, expectedMessage) => {
+    expect(() => validateSchema(schema as unknown as UmpireJsonSchema)).toThrow(
+      expectedMessage,
+    )
+  })
+
+  test('rejects non-finite JSON numbers supplied as raw objects', () => {
+    expect(() =>
+      validateSchema({
+        version: 1,
+        fields: { target: { default: Number.POSITIVE_INFINITY } },
+        rules: [],
+      }),
+    ).toThrow('non-serializable default value')
+  })
+
+  test('accepts canonical condition definitions and reason-less oneOf rules', () => {
+    expect(() =>
+      validateSchema({
+        version: 1,
+        conditions: {
+          role: {
+            type: 'string',
+            description: 'Current account role',
+          },
+        },
+        fields: {
+          email: {},
+          phone: {},
+        },
+        rules: [
+          {
+            type: 'oneOf',
+            group: 'contact',
+            branches: {
+              email: ['email'],
+              phone: ['phone'],
+            },
+          },
+        ],
+      }),
+    ).not.toThrow()
   })
 
   test('accepts nested anyOf/eitherOf composites with matching targets and constraints', () => {

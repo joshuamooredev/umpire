@@ -13,10 +13,263 @@ import { isJsonIsEmptyStrategy } from './strategies.js'
 
 type JsonRuleConstraint = 'enabled' | 'fair'
 
+const conditionTypes = new Set([
+  'boolean',
+  'string',
+  'number',
+  'string[]',
+  'number[]',
+])
+
+function assertKnownMembers(
+  value: object,
+  allowed: readonly string[],
+  context: string,
+) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new Error(`[@umpire/json] ${context} has unknown member "${key}"`)
+    }
+  }
+}
+
+function validatorSpecMembers(op: unknown): string[] {
+  switch (op) {
+    case 'email':
+    case 'url':
+    case 'integer':
+      return ['op']
+    case 'matches':
+      return ['op', 'pattern']
+    case 'minLength':
+    case 'maxLength':
+    case 'min':
+    case 'max':
+      return ['op', 'value']
+    case 'range':
+      return ['op', 'min', 'max']
+    default:
+      return ['op']
+  }
+}
+
+function assertString(
+  value: unknown,
+  context: string,
+): asserts value is string {
+  if (typeof value !== 'string') {
+    throw new Error(`[@umpire/json] ${context} must be a string`)
+  }
+}
+
+function assertNumber(
+  value: unknown,
+  context: string,
+): asserts value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`[@umpire/json] ${context} must be a finite number`)
+  }
+}
+
+function assertPrimitive(value: unknown, context: string) {
+  if (!isJsonPrimitive(value)) {
+    throw new Error(`[@umpire/json] ${context} must be a JSON primitive`)
+  }
+}
+
+function assertPrimitiveArray(value: unknown, context: string) {
+  if (!Array.isArray(value) || !value.every(isJsonPrimitive)) {
+    throw new Error(
+      `[@umpire/json] ${context} must be an array of JSON primitives`,
+    )
+  }
+}
+
+function assertStringArray(value: unknown, context: string) {
+  if (
+    !Array.isArray(value) ||
+    !value.every((entry) => typeof entry === 'string')
+  ) {
+    throw new Error(`[@umpire/json] ${context} must be an array of strings`)
+  }
+}
+
+function validateValidatorSpecMembers(
+  spec: unknown,
+  additionalMembers: readonly string[] = [],
+) {
+  if (!isPlainRecord(spec)) {
+    throw new Error('[@umpire/json] Validator spec must be an object')
+  }
+
+  assertKnownMembers(
+    spec,
+    [...validatorSpecMembers(spec.op), ...additionalMembers],
+    'Validator spec',
+  )
+
+  switch (spec.op) {
+    case 'email':
+    case 'url':
+    case 'integer':
+      break
+    case 'matches':
+      assertString(spec.pattern, 'Validator "matches" pattern')
+      break
+    case 'minLength':
+    case 'maxLength':
+    case 'min':
+    case 'max':
+      assertNumber(spec.value, `Validator "${spec.op}" value`)
+      break
+    case 'range':
+      assertNumber(spec.min, 'Validator "range" min')
+      assertNumber(spec.max, 'Validator "range" max')
+      break
+  }
+
+  assertValidValidatorSpec(spec as JsonValidatorDef)
+}
+
+// eslint-disable-next-line complexity -- closed-member and shape walk over a finite set of expression variants
+function validateExpression(expression: unknown): void {
+  if (!isPlainRecord(expression)) {
+    throw new Error('[@umpire/json] Expression must be an object')
+  }
+
+  switch (expression.op) {
+    case 'eq':
+    case 'neq':
+      assertKnownMembers(expression, ['op', 'field', 'value'], 'Expression')
+      assertString(expression.field, `Expression "${expression.op}" field`)
+      assertPrimitive(expression.value, `Expression "${expression.op}" value`)
+      return
+    case 'gt':
+    case 'gte':
+    case 'lt':
+    case 'lte':
+      assertKnownMembers(expression, ['op', 'field', 'value'], 'Expression')
+      assertString(expression.field, `Expression "${expression.op}" field`)
+      assertNumber(expression.value, `Expression "${expression.op}" value`)
+      return
+    case 'present':
+    case 'absent':
+    case 'truthy':
+    case 'falsy':
+      assertKnownMembers(expression, ['op', 'field'], 'Expression')
+      assertString(expression.field, `Expression "${expression.op}" field`)
+      return
+    case 'in':
+    case 'notIn':
+      assertKnownMembers(expression, ['op', 'field', 'values'], 'Expression')
+      assertString(expression.field, `Expression "${expression.op}" field`)
+      assertPrimitiveArray(
+        expression.values,
+        `Expression "${expression.op}" values`,
+      )
+      return
+    case 'cond':
+      assertKnownMembers(expression, ['op', 'condition'], 'Expression')
+      assertString(expression.condition, 'Expression "cond" condition')
+      return
+    case 'condEq':
+      assertKnownMembers(expression, ['op', 'condition', 'value'], 'Expression')
+      assertString(expression.condition, 'Expression "condEq" condition')
+      assertPrimitive(expression.value, 'Expression "condEq" value')
+      return
+    case 'condIn':
+      assertKnownMembers(
+        expression,
+        ['op', 'condition', 'values'],
+        'Expression',
+      )
+      assertString(expression.condition, 'Expression "condIn" condition')
+      assertPrimitiveArray(expression.values, 'Expression "condIn" values')
+      return
+    case 'fieldInCond':
+      assertKnownMembers(expression, ['op', 'field', 'condition'], 'Expression')
+      assertString(expression.field, 'Expression "fieldInCond" field')
+      assertString(expression.condition, 'Expression "fieldInCond" condition')
+      return
+    case 'and':
+    case 'or':
+      assertKnownMembers(expression, ['op', 'exprs'], 'Expression')
+      if (!Array.isArray(expression.exprs)) {
+        throw new Error(
+          `[@umpire/json] Expression "${expression.op}" exprs must be an array`,
+        )
+      }
+      for (const entry of expression.exprs) {
+        validateExpression(entry)
+      }
+      return
+    case 'not':
+      assertKnownMembers(expression, ['op', 'expr'], 'Expression')
+      validateExpression(expression.expr)
+      return
+    case 'check':
+      assertKnownMembers(expression, ['op', 'field', 'check'], 'Expression')
+      assertString(expression.field, 'Expression "check" field')
+      validateValidatorSpecMembers(expression.check)
+      return
+    default:
+      throw new Error(
+        `[@umpire/json] Unknown expression op "${String(expression.op)}"`,
+      )
+  }
+}
+
+function validateCondition(condition: string, definition: unknown) {
+  if (!isPlainRecord(definition)) {
+    throw new Error(
+      `[@umpire/json] condition "${condition}" definition must be an object`,
+    )
+  }
+
+  assertKnownMembers(
+    definition,
+    ['type', 'description'],
+    'condition definition',
+  )
+
+  if (
+    typeof definition.type !== 'string' ||
+    !conditionTypes.has(definition.type)
+  ) {
+    throw new Error(
+      `[@umpire/json] condition "${condition}" must use a supported type`,
+    )
+  }
+
+  if (
+    definition.description !== undefined &&
+    typeof definition.description !== 'string'
+  ) {
+    throw new Error(
+      `[@umpire/json] condition "${condition}" description must be a string when provided`,
+    )
+  }
+}
+
 function validateFieldDef(field: string, definition: JsonFieldDef) {
   if (!isPlainRecord(definition)) {
     throw new Error(
       `[@umpire/json] Field "${field}" definition must be an object`,
+    )
+  }
+
+  assertKnownMembers(
+    definition,
+    ['required', 'default', 'isEmpty'],
+    'field definition',
+  )
+
+  if (
+    definition.required !== undefined &&
+    typeof definition.required !== 'boolean'
+  ) {
+    throw new Error(
+      `[@umpire/json] Field "${field}" required must be a boolean when provided`,
     )
   }
 
@@ -40,6 +293,16 @@ function validateFieldDef(field: string, definition: JsonFieldDef) {
 }
 
 function validateExcludedRule(rule: ExcludedRule) {
+  if (!isPlainRecord(rule)) {
+    throw new Error('[@umpire/json] Excluded rule must be an object')
+  }
+
+  assertKnownMembers(
+    rule,
+    ['type', 'field', 'description', 'key', 'signature'],
+    'Excluded rule',
+  )
+
   if (typeof rule.type !== 'string' || rule.type.length === 0) {
     throw new Error(
       '[@umpire/json] Excluded rules must include a non-empty string type',
@@ -86,7 +349,7 @@ function validateValidator(
 ) {
   if (!fieldNames.has(field)) {
     throw new Error(
-      `[@umpire/json] Validator references unknown field "${field}"`,
+      `[@umpire/json] Validator references unknown field "${field}" (validator)`,
     )
   }
 
@@ -96,7 +359,7 @@ function validateValidator(
     )
   }
 
-  assertValidValidatorSpec(validator)
+  validateValidatorSpecMembers(validator, ['error'])
 
   if (validator.error !== undefined && typeof validator.error !== 'string') {
     throw new Error(
@@ -211,6 +474,129 @@ function resolveEitherOfShape(rule: Extract<JsonRule, { type: 'eitherOf' }>): {
   )
 }
 
+function validateRuleMembers(rule: JsonRule) {
+  switch (rule.type) {
+    case 'requires':
+      assertKnownMembers(
+        rule,
+        'dependency' in rule
+          ? ['type', 'field', 'dependency', 'reason']
+          : 'dependencies' in rule
+            ? ['type', 'field', 'dependencies', 'reason']
+            : ['type', 'field', 'when', 'reason'],
+        'Rule',
+      )
+      return
+    case 'enabledWhen':
+    case 'fairWhen':
+      assertKnownMembers(rule, ['type', 'field', 'when', 'reason'], 'Rule')
+      return
+    case 'disables':
+      assertKnownMembers(
+        rule,
+        'source' in rule
+          ? ['type', 'source', 'targets', 'reason']
+          : ['type', 'when', 'targets', 'reason'],
+        'Rule',
+      )
+      return
+    case 'oneOf':
+    case 'eitherOf':
+      assertKnownMembers(rule, ['type', 'group', 'branches'], 'Rule')
+      return
+    case 'anyOf':
+      assertKnownMembers(rule, ['type', 'rules'], 'Rule')
+      return
+    case 'check':
+      assertKnownMembers(
+        rule,
+        ['type', 'field', 'reason', ...validatorSpecMembers(rule.op)],
+        'Rule',
+      )
+      return
+  }
+}
+
+// eslint-disable-next-line complexity -- one flat shape check per canonical rule variant
+function validateRuleShape(rule: unknown): asserts rule is JsonRule {
+  if (!isPlainRecord(rule)) {
+    throw new Error('[@umpire/json] Rule must be an object')
+  }
+
+  validateRuleMembers(rule as JsonRule)
+
+  if (rule.reason !== undefined) {
+    assertString(rule.reason, 'Rule reason')
+  }
+
+  switch (rule.type) {
+    case 'requires':
+      assertString(rule.field, 'Rule "requires" field')
+      if ('dependency' in rule) {
+        assertString(rule.dependency, 'Rule "requires" dependency')
+      } else if ('dependencies' in rule) {
+        if (!Array.isArray(rule.dependencies)) {
+          throw new Error(
+            '[@umpire/json] Rule "requires" dependencies must be an array',
+          )
+        }
+      } else {
+        validateExpression(rule.when)
+      }
+      return
+    case 'enabledWhen':
+    case 'fairWhen':
+      assertString(rule.field, `Rule "${rule.type}" field`)
+      validateExpression(rule.when)
+      return
+    case 'disables':
+      assertStringArray(rule.targets, 'Rule "disables" targets')
+      if ('source' in rule) {
+        assertString(rule.source, 'Rule "disables" source')
+      } else {
+        validateExpression(rule.when)
+      }
+      return
+    case 'oneOf':
+      assertString(rule.group, 'Rule "oneOf" group')
+      if (!isPlainRecord(rule.branches)) {
+        throw new Error(
+          '[@umpire/json] Rule "oneOf" branches must be an object',
+        )
+      }
+      for (const [branch, fields] of Object.entries(rule.branches)) {
+        assertStringArray(fields, `Rule "oneOf" branch "${branch}"`)
+      }
+      return
+    case 'eitherOf':
+      assertString(rule.group, 'Rule "eitherOf" group')
+      if (!isPlainRecord(rule.branches)) {
+        throw new Error(
+          '[@umpire/json] Rule "eitherOf" branches must be an object',
+        )
+      }
+      for (const [branch, rules] of Object.entries(rule.branches)) {
+        if (!Array.isArray(rules)) {
+          throw new Error(
+            `[@umpire/json] Rule "eitherOf" branch "${branch}" must be an array`,
+          )
+        }
+      }
+      return
+    case 'anyOf':
+      if (!Array.isArray(rule.rules)) {
+        throw new Error('[@umpire/json] Rule "anyOf" rules must be an array')
+      }
+      return
+    case 'check':
+      assertString(rule.field, 'Rule "check" field')
+      validateValidatorSpecMembers(rule, ['type', 'field', 'reason'])
+      return
+    default:
+      throw new Error(`[@umpire/json] Unknown rule type "${String(rule.type)}"`)
+  }
+}
+
 function validateRequiresRule(
   rule: Extract<JsonRule, { type: 'requires' }>,
   fieldNames: Set<string>,
@@ -236,12 +622,14 @@ function validateRequiresRule(
         continue
       }
 
+      validateExpression(dependency)
       compileExpr(dependency, { fieldNames, conditions })
     }
 
     return
   }
 
+  validateExpression(rule.when)
   compileExpr(rule.when, { fieldNames, conditions })
 }
 
@@ -259,20 +647,24 @@ function validateDisablesRule(
     return
   }
 
+  validateExpression(rule.when)
   compileExpr(rule.when, { fieldNames, conditions })
 }
 
 function validateRule(
-  rule: JsonRule,
+  rule: unknown,
   fieldNames: Set<string>,
   conditions: UmpireJsonSchema['conditions'],
 ) {
+  validateRuleShape(rule)
+
   switch (rule.type) {
     case 'requires':
       validateRequiresRule(rule, fieldNames, conditions)
       return
     case 'enabledWhen':
       assertField(rule.field, fieldNames, '"enabledWhen"')
+      validateExpression(rule.when)
       compileExpr(rule.when, { fieldNames, conditions })
       return
     case 'disables':
@@ -287,30 +679,27 @@ function validateRule(
       return
     case 'fairWhen':
       assertField(rule.field, fieldNames, '"fairWhen"')
+      validateExpression(rule.when)
       compileExpr(rule.when, { fieldNames, conditions })
       return
     case 'eitherOf':
-      resolveEitherOfShape(rule)
       for (const branchRules of Object.values(rule.branches)) {
         for (const innerRule of branchRules) {
           validateRule(innerRule, fieldNames, conditions)
         }
       }
+      resolveEitherOfShape(rule)
       return
     case 'anyOf':
-      resolveCompositeShape('anyOf()', rule.rules)
       for (const innerRule of rule.rules) {
         validateRule(innerRule, fieldNames, conditions)
       }
+      resolveCompositeShape('anyOf()', rule.rules)
       return
     case 'check':
       assertField(rule.field, fieldNames, '"check"')
       assertValidCheckRule(rule)
       return
-    default:
-      throw new Error(
-        `[@umpire/json] Unknown rule type "${String((rule as { type?: unknown }).type)}"`,
-      )
   }
 }
 
@@ -321,6 +710,12 @@ export function validateSchema(
   if (!isPlainRecord(schema)) {
     throw new Error('[@umpire/json] Schema must be an object')
   }
+
+  assertKnownMembers(
+    schema,
+    ['version', 'conditions', 'fields', 'rules', 'validators', 'excluded'],
+    'Schema has unknown members; expected version, conditions, fields, rules, validators, excluded',
+  )
 
   if (schema.version === undefined) {
     throw new Error('[@umpire/json] Schema must include a "version" field')
@@ -362,6 +757,12 @@ export function validateSchema(
 
   const fieldNames = new Set(Object.keys(typedSchema.fields))
 
+  for (const [condition, definition] of Object.entries(
+    typedSchema.conditions ?? {},
+  )) {
+    validateCondition(condition, definition)
+  }
+
   for (const [field, definition] of Object.entries(typedSchema.fields)) {
     validateFieldDef(field, definition)
   }
@@ -378,5 +779,9 @@ export function validateSchema(
 
   for (const rule of typedSchema.excluded ?? []) {
     validateExcludedRule(rule)
+  }
+
+  if (fieldNames.size === 0) {
+    throw new Error('[@umpire/json] Schema must include at least one field')
   }
 }
