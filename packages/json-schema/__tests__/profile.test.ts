@@ -5,16 +5,17 @@ import {
   compileSchemas,
   filterStructuralIssues,
 } from '../src/index.js'
+import { suppressTypeDependents, normalizeAjvErrors } from '../src/issues.js'
 import type { StructuralIssue } from '../src/schema.js'
 
 import {
   workflowProfile,
   validWorkflowInstance,
   wrongNodesTypeInstance,
-  // missingRequiredNodePropInstance,
+  missingRequiredNodePropInstance,
   unknownNodePropertyInstance,
   invalidDiscriminatorInstance,
-  // missingDiscriminatorInstance,
+  missingDiscriminatorInstance,
   omittedTagsInstance,
   nullTagsInstance,
   validatorCoexistenceProfile,
@@ -74,14 +75,23 @@ describe('compileProfile', () => {
       },
     })
     expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.issues.some((i) => i.path === '/valueSchema/$schema')).toBe(
+        true,
+      )
+    }
   })
 
   test('rejects unsupported value schema keywords', () => {
     const result = compileProfile(unsupportedKeywordProfile)
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      // AJV catches unknown format during schema compilation
-      expect(result.issues.length).toBeGreaterThan(0)
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({
+          code: 'unsupportedKeyword',
+          path: '/valueSchema/properties/name/format',
+        }),
+      )
     }
   })
 
@@ -179,6 +189,26 @@ describe('compileSchemas', () => {
     })
     expect(result.ok).toBe(false)
   })
+
+  test('rejects non-record umpire', () => {
+    const result = compileSchemas({
+      valueSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        additionalProperties: false,
+      },
+      umpire: 'not-an-object',
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.issues).toContainEqual({
+        code: 'invalidProfile',
+        path: '/umpire',
+        message: 'umpire must be an object',
+      })
+    }
+  })
 })
 
 describe('CompiledProfile.check()', () => {
@@ -230,6 +260,38 @@ describe('CompiledProfile.validateStructure()', () => {
     expect(structure.issues).toHaveLength(0)
   })
 
+  test('missing required node property emits required at /nodes/0/id', () => {
+    const result = compileProfile(workflowProfile)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const structure = result.profile.validateStructure(
+      missingRequiredNodePropInstance,
+    )
+    expect(structure.valid).toBe(false)
+    expect(
+      structure.issues.some(
+        (i) => i.code === 'required' && i.path === '/nodes/0/id',
+      ),
+    ).toBe(true)
+  })
+
+  test('missing discriminator emits required at /nodes/0/action/type', () => {
+    const result = compileProfile(workflowProfile)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const structure = result.profile.validateStructure(
+      missingDiscriminatorInstance,
+    )
+    expect(structure.valid).toBe(false)
+    expect(
+      structure.issues.some(
+        (i) => i.code === 'required' && i.path === '/nodes/0/action/type',
+      ),
+    ).toBe(true)
+  })
+
   test('catches wrong type for nodes (proving structural validation independent of availability)', () => {
     const result = compileProfile(workflowProfile)
     expect(result.ok).toBe(true)
@@ -273,8 +335,7 @@ describe('CompiledProfile.validateStructure()', () => {
     )
     expect(structure.valid).toBe(false)
 
-    // Should have issues about the discriminator
-    expect(structure.issues.length).toBeGreaterThan(0)
+    expect(structure.issues.some((i) => i.code === 'discriminator')).toBe(true)
   })
 
   test('omitted optional property is structurally valid', () => {
@@ -325,13 +386,10 @@ describe('CompiledProfile.validateStructure()', () => {
     const structure = result.profile.validateStructure({ age: -1 })
     expect(structure.valid).toBe(false)
 
-    // Issues should be sorted by path, then code
-    for (let i = 1; i < structure.issues.length; i++) {
-      const prev = structure.issues[i - 1]
-      const curr = structure.issues[i]
-      const pathCmp = prev.path.localeCompare(curr.path)
-      expect(pathCmp <= 0).toBe(true)
-    }
+    expect(structure.issues.map((i) => [i.path, i.code])).toEqual([
+      ['/age', 'minimum'],
+      ['/name', 'required'],
+    ])
   })
 })
 
@@ -583,7 +641,7 @@ describe('Normalized issue contract', () => {
 })
 
 describe('Coverage gaps', () => {
-  test('rejects profile with invalid umpire portion (fromJsonSafe failure)', () => {
+  test('rejects an invalid Umpire version through meta-schema validation', () => {
     const result = compileProfile({
       $schema:
         'https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json',
@@ -595,14 +653,14 @@ describe('Coverage gaps', () => {
         additionalProperties: false,
       },
       umpire: {
-        version: 999, // invalid version — fromJsonSafe will fail
+        version: 999, // invalid version — rejected by the profile meta-schema
         fields: { x: {} },
         rules: [],
       },
     })
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.issues[0].path).toBe('/umpire')
+      expect(result.issues.some((i) => i.path === '/umpire/version')).toBe(true)
     }
   })
 
@@ -771,6 +829,28 @@ describe('Coverage gaps', () => {
     }
   })
 
+  test('accepts integer default that matches the property type', () => {
+    const result = compileProfile({
+      $schema:
+        'https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json',
+      profileVersion: 1,
+      valueSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        properties: {
+          count: { type: 'integer' },
+        },
+        additionalProperties: false,
+      },
+      umpire: {
+        version: 1,
+        fields: { count: { default: 5 } },
+        rules: [],
+      },
+    })
+    expect(result.ok).toBe(true)
+  })
+
   test('rejects integer enum value that is a fraction', () => {
     const result = compileProfile({
       $schema:
@@ -801,6 +881,36 @@ describe('Coverage gaps', () => {
     }
   })
 
+  test('reports a shared $defs issue only once (dedup by code+path)', () => {
+    // Two root properties reference the same $defs, which carries an
+    // unsupported keyword. The closed-vocabulary walk expands it via several
+    // paths, so the issue must not be duplicated.
+    const result = compileProfile({
+      $schema:
+        'https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json',
+      profileVersion: 1,
+      valueSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        properties: {
+          a: { $ref: '#/$defs/Thing' },
+          b: { $ref: '#/$defs/Thing' },
+        },
+        additionalProperties: false,
+        $defs: { Thing: { type: 'string', pattern: '^x$' } },
+      },
+      umpire: { version: 1, fields: { a: {}, b: {} }, rules: [] },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      const keyed = result.issues.map((i) => `${i.code}|${i.path}`)
+      expect(new Set(keyed).size).toBe(keyed.length)
+      expect(keyed).toContain(
+        'unsupportedKeyword|/valueSchema/$defs/Thing/pattern',
+      )
+    }
+  })
+
   test('oneOf rejects non-object branch schema', () => {
     const result = compileProfile({
       $schema:
@@ -813,6 +923,42 @@ describe('Coverage gaps', () => {
           action: {
             oneOf: [
               { type: 'string' }, // not an object
+            ],
+          },
+        },
+        additionalProperties: false,
+      },
+      umpire: {
+        version: 1,
+        fields: { action: {} },
+        rules: [],
+      },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.issues.some((i) => i.code === 'invalidDiscriminator')).toBe(
+        true,
+      )
+    }
+  })
+
+  test('oneOf rejects numeric discriminator const', () => {
+    const result = compileProfile({
+      $schema:
+        'https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json',
+      profileVersion: 1,
+      valueSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        properties: {
+          action: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: { kind: { type: 'integer', const: 1 } },
+                required: ['kind'],
+                additionalProperties: false,
+              },
             ],
           },
         },
@@ -978,6 +1124,79 @@ describe('Coverage gaps', () => {
     expect(structure.issues).toHaveLength(1)
     expect(structure.issues[0].path).toBe('/')
     expect(structure.issues[0].code).toBe('type')
+  })
+
+  test('suppressTypeDependents handles nested paths independently', () => {
+    const issues: StructuralIssue[] = [
+      {
+        source: 'json-schema',
+        code: 'type',
+        path: '/nested/inner',
+        message: 'must be string',
+      },
+      {
+        source: 'json-schema',
+        code: 'minLength',
+        path: '/nested/inner',
+        message: 'must NOT have fewer than 1 characters',
+      },
+      {
+        source: 'json-schema',
+        code: 'minimum',
+        path: '/nested/count',
+        message: 'must be >= 0',
+      },
+    ]
+
+    expect(suppressTypeDependents(issues)).toEqual([issues[0], issues[2]])
+  })
+
+  test('normalizeAjvErrors transforms AJV discriminator errors', () => {
+    // Missing discriminator tag → required
+    const missingTagErrors = normalizeAjvErrors(
+      [
+        {
+          keyword: 'discriminator',
+          instancePath: '/action',
+          schemaPath: '#/oneOf/0/discriminator',
+          params: { error: 'tag' as const, tag: 'kind' },
+          message: 'tag "kind" is not provided',
+        },
+      ],
+      { action: {} },
+    )
+    expect(missingTagErrors).toEqual([
+      {
+        source: 'json-schema',
+        code: 'required',
+        path: '/action/kind',
+        message: 'tag "kind" is not provided',
+        schemaPath: '#/oneOf/0/discriminator',
+      },
+    ])
+
+    // Unknown discriminator tag value → discriminator (prop is present in raw)
+    const unknownTagErrors = normalizeAjvErrors(
+      [
+        {
+          keyword: 'discriminator',
+          instancePath: '/action',
+          schemaPath: '#/oneOf/0/discriminator',
+          params: { error: 'tag' as const, tag: 'kind', tagValue: 'unknown' },
+          message: 'tag value "unknown" is not allowed',
+        },
+      ],
+      { action: { kind: 'unknown' } },
+    )
+    expect(unknownTagErrors).toEqual([
+      {
+        source: 'json-schema',
+        code: 'discriminator',
+        path: '/action/kind',
+        message: 'tag value "unknown" is not allowed',
+        schemaPath: '#/oneOf/0/discriminator',
+      },
+    ])
   })
 
   test('RFC 6901 escaped field names are unescaped before filtering', () => {
