@@ -15,7 +15,7 @@ import type {
 import { DEFINITION_ISSUE_CODES } from './schema.js'
 import type { FieldStatus, InputValues } from '@umpire/core'
 import { PROFILE_META_SCHEMA, checkProfileConsistency } from './consistency.js'
-import { applyDiscriminators } from './discriminator.js'
+import { prepareValueSchema } from './discriminator.js'
 import { normalizeAjvErrors, suppressTypeDependents } from './issues.js'
 
 const C = DEFINITION_ISSUE_CODES
@@ -80,10 +80,22 @@ export function compileProfile<
   //    bare `oneOf` without `type: "object"` on the union node itself, which
   //    AJV's strictTypes rule would otherwise flag. Profile-definition
   //    rejection is owned by the closed-vocabulary + consistency checks.
-  const vsAjv = new Ajv({ allErrors: true, discriminator: true, strict: false })
+  const vsAjv = new Ajv({
+    allErrors: true,
+    discriminator: true,
+    strict: false,
+    strictNumbers: true,
+  })
+  vsAjv.addKeyword({
+    keyword: 'safeInteger',
+    type: 'number',
+    schemaType: 'boolean',
+    validate: (_schema: boolean, value: number) =>
+      !Number.isInteger(value) || Number.isSafeInteger(value),
+  })
   let valueValidate: ReturnType<typeof vsAjv.compile>
   try {
-    valueValidate = vsAjv.compile(applyDiscriminators(profile.valueSchema))
+    valueValidate = vsAjv.compile(prepareValueSchema(profile.valueSchema))
   } catch (err) {
     return {
       ok: false,
@@ -184,12 +196,12 @@ function validateDefaults(
     if (ok) continue
     const errs = validate.errors ?? []
     const ownIssue = normalizeAjvErrors(errs, probe).some(
-      (i) => i.path === `/${name}`,
+      (i) => i.path === `/${escapePointerToken(name)}`,
     )
     if (ownIssue) {
       issues.push({
         code: C.INVALID_DEFAULT,
-        path: `/umpire/fields/${name}/default`,
+        path: `/umpire/fields/${escapePointerToken(name)}/default`,
         message: `Default ${JSON.stringify(fd.default)} does not validate against property schema`,
       })
     }
@@ -200,6 +212,10 @@ function validateDefaults(
 /**
  * Validate the basic shape of a profile document before full validation.
  */
+function escapePointerToken(token: string): string {
+  return token.replace(/~/g, '~0').replace(/\//g, '~1')
+}
+
 function validateProfileShape(raw: unknown): ProfileDefinitionIssue[] {
   const issues: ProfileDefinitionIssue[] = []
 
