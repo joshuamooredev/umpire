@@ -548,7 +548,10 @@ export default function MinesweeperDemo({
                               }
                               aria-rowindex={cell.y + 1}
                               aria-colindex={cell.x + 1}
-                              aria-disabled={!cellAvailability.enabled}
+                              aria-disabled={
+                                !cellAvailability.enabled &&
+                                !(conditions.flagMode && value === "flagged")
+                              }
                               aria-label={`Cell ${cell.x + 1}, ${cell.y + 1}: ${describeCellValue(value)}`}
                               className={cls(
                                 "c-minesweeper-demo__cell",
