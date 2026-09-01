@@ -31,6 +31,12 @@ const MINE_COUNT = 10;
 
 const EMPTY_BOARD = createBoard(BOARD_WIDTH, BOARD_HEIGHT);
 const CELL_ORDER = Object.values(EMPTY_BOARD);
+const CELL_ROWS = Array.from({ length: BOARD_HEIGHT }, (_, rowIndex) =>
+  CELL_ORDER.slice(
+    rowIndex * BOARD_WIDTH,
+    (rowIndex + 1) * BOARD_WIDTH,
+  ),
+);
 const MINESWEEPER_READS = createMinesweeperReads(BOARD_WIDTH, BOARD_HEIGHT);
 
 const STATUS_FACE: Record<GameConditions["gameStatus"], string> = {
@@ -440,8 +446,7 @@ export default function MinesweeperDemo({
                   aria-pressed={!conditions.flagMode}
                   className={cls(
                     "c-minesweeper-demo__mode-button",
-                    !conditions.flagMode &&
-                    "c-minesweeper-demo__mode-button is-active",
+                    !conditions.flagMode && "is-active",
                   )}
                   onClick={() =>
                     setConditions((current) => ({
@@ -457,8 +462,7 @@ export default function MinesweeperDemo({
                   aria-pressed={conditions.flagMode}
                   className={cls(
                     "c-minesweeper-demo__mode-button",
-                    conditions.flagMode &&
-                    "c-minesweeper-demo__mode-button is-active",
+                    conditions.flagMode && "is-active",
                   )}
                   onClick={() =>
                     setConditions((current) => ({ ...current, flagMode: true }))
@@ -512,11 +516,7 @@ export default function MinesweeperDemo({
                   aria-label="Minesweeper board"
                   className="c-minesweeper-demo__grid"
                 >
-                  {Array.from({ length: BOARD_HEIGHT }, (_, rowIndex) => {
-                    const rowCells = CELL_ORDER.slice(
-                      rowIndex * BOARD_WIDTH,
-                      (rowIndex + 1) * BOARD_WIDTH,
-                    );
+                  {CELL_ROWS.map((rowCells, rowIndex) => {
 
                     return (
                       <div
@@ -555,13 +555,11 @@ export default function MinesweeperDemo({
                               aria-label={`Cell ${cell.x + 1}, ${cell.y + 1}: ${describeCellValue(value)}`}
                               className={cls(
                                 "c-minesweeper-demo__cell",
-                                !isRevealed && "c-minesweeper-demo__cell is-hidden",
-                                isRevealed && "c-minesweeper-demo__cell is-revealed",
-                                value === "flagged" &&
-                                "c-minesweeper-demo__cell is-flagged",
+                                !isRevealed && "is-hidden",
+                                isRevealed && "is-revealed",
+                                value === "flagged" && "is-flagged",
                                 isMine && "c-minesweeper-demo__cell--mine",
-                                !cellAvailability.enabled &&
-                                "c-minesweeper-demo__cell is-disabled",
+                                !cellAvailability.enabled && "is-disabled",
                               )}
                               onClick={() => handleCellClick(cell)}
                               onKeyDown={handleCellKeyDown}
